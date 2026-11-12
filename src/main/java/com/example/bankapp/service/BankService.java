@@ -154,66 +154,77 @@ public List<BankTransaction> getLargeTransfers(BigDecimal minAmount) {
 
     // Transfer money
     
-    @Transactional(rollbackFor = Exception.class)
     
-    public BankTransaction transfer(
-            String fromAccount,
-            String toAccount,
-            BigDecimal amount,
-            boolean simulateFailure) {
+private static final String BANK_ACCOUNT = "999999";
+private static final BigDecimal TRANSFER_FEE_RATE = new BigDecimal("0.01");
 
-        if (fromAccount.equals(toAccount)) {
-            throw new BankException(
-                    "Sender and receiver must be different accounts");
-        }
+@Transactional(rollbackFor = Exception.class)
+public BankTransaction transfer(
+        String fromAccount,
+        String toAccount,
+        BigDecimal amount,
+        boolean simulateFailure) {
 
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BankException("Invalid transfer amount");
-        }
-
-        Customer sender = customerRepository
-                .getByAccountNumber(fromAccount)
-                .orElseThrow(() -> new AccountNotFoundException(
-                        "Sender account not found"));
-
-        customerRepository.getByAccountNumber(toAccount)
-                .orElseThrow(() -> new AccountNotFoundException(
-                        "Receiver account not found"));
-
-        // Step 1: Debit sender
-        int debited = customerRepository.debit(fromAccount, amount);
-
-        if (debited == 0) {
-            throw new InsufficientBalanceException(
-                    "Insufficient balance");
-        }
-
-        // Step 2: Simulate system failure
-        if (simulateFailure) {
-            throw new BankException(
-                    "All changes were rolled back");
-        }
-
-        // Step 3: Credit receiver
-        int credited = customerRepository.credit(toAccount, amount);
-
-        if (credited == 0) {
-            throw new AccountNotFoundException(
-                    "Receiver account not found");
-        }
-
-        // Step 4: Save successful transaction
-        BankTransaction transaction = new BankTransaction();
-
-        transaction.setAmount(amount);
-        transaction.setFromAccount(fromAccount);
-        transaction.setToAccount(toAccount);
-        transaction.setStatus(TransactionStatus.SUCCESS);
-        transaction.setDescription("Bank transfer successful");
-        transaction.setCreatedAt(LocalDateTime.now());
-
-        return transactionRepository.save(transaction);
+    if (fromAccount.equals(toAccount)) {
+        throw new BankException("Sender and receiver must be different accounts");
     }
+
+    if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+        throw new BankException("Invalid transfer amount");
+    }
+
+    customerRepository.getByAccountNumber(fromAccount)
+            .orElseThrow(() -> new AccountNotFoundException("Sender account not found"));
+
+    customerRepository.getByAccountNumber(toAccount)
+            .orElseThrow(() -> new AccountNotFoundException("Receiver account not found"));
+
+    customerRepository.getByAccountNumber(BANK_ACCOUNT)
+            .orElseThrow(() -> new AccountNotFoundException("Bank account not found"));
+
+    BigDecimal fee = amount.multiply(TRANSFER_FEE_RATE)
+            .setScale(2, java.math.RoundingMode.HALF_UP);
+
+    BigDecimal totalDebit = amount.add(fee);
+
+    // 1. Debit sender: transfer amount + 1% fee
+    int debited = customerRepository.debit(fromAccount, totalDebit);
+
+    if (debited == 0) {
+        throw new InsufficientBalanceException("Insufficient balance including transfer fee");
+    }
+
+    // 2. Simulate failure for rollback testing
+    if (simulateFailure) {
+        throw new BankException("Simulated failure - all changes rolled back");
+    }
+
+    // 3. Credit receiver
+    int credited = customerRepository.credit(toAccount, amount);
+
+    if (credited == 0) {
+        throw new AccountNotFoundException("Receiver account not found");
+    }
+
+    // 4. Credit bank account with fee
+    int bankCredited = customerRepository.credit(BANK_ACCOUNT, fee);
+
+    if (bankCredited == 0) {
+        throw new AccountNotFoundException("Bank fee account not found");
+    }
+
+    // 5. Save transaction
+    BankTransaction transaction = new BankTransaction();
+    transaction.setAmount(amount);
+    transaction.setFromAccount(fromAccount);
+    transaction.setToAccount(toAccount);
+    transaction.setStatus(TransactionStatus.SUCCESS);
+    transaction.setDescription("Bank transfer successful. 1% fee: LKR " + fee);
+    transaction.setCreatedAt(LocalDateTime.now());
+
+    return transactionRepository.save(transaction);
+}
+
 // Calculate total successful outgoing transactions
 
     public BigDecimal getTotalSent(String accountNumber) {
